@@ -124,4 +124,11 @@ public class GuideMaskPanelUI : MonoBehaviour, IPointerClickHandler
 
     //     this.callback = callback;
     // }
+
+    //例如
+        //     Ctrls.uiPanelCtrl.ShowPanel<GuideMaskPanelUI>((panel) =>
+        // {
+        //     panel.Init(guideTarget, 135, 128, Vector3.zero, Vector3.zero, new Vector3(83, 301, 0),
+        //                 "点击\"力量属性\"按钮");
+        // });
 }

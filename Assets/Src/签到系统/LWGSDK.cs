@@ -13,6 +13,7 @@ public static class LWGSDK
     /// <returns>当前本地时间对应的UTC时间戳</returns>
     public static Task<long> GetServerTime()
     {
+        // return GetServerTime3();//可以用来测试时间偏移，调整TimeOffsetSeconds即可
         DateTime utcNow = DateTime.UtcNow;
         DateTime unixBase = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc);
         long timeStamp = (long)(utcNow - unixBase).TotalSeconds;
@@ -57,7 +58,7 @@ public static class LWGSDK
     /// 时间偏移量（秒）：正数=服务器时间比本地UTC快，负数=慢
     /// 比如：3600 = 快1小时，-1800 = 慢30分钟
     /// </summary>
-    public static int TimeOffsetSeconds = 0;
+    public static int TimeOffsetSeconds = 3600;//需要偏移多少个小时就乘以多少，测试方便
 
     public static Task<long> GetServerTime3()
     {

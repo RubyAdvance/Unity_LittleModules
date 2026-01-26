@@ -353,6 +353,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   loopScrollView: {fileID: 1467336644}
+  targetIndex: 99
 --- !u!1 &961739749
 GameObject:
   m_ObjectHideFlags: 0
@@ -768,11 +769,12 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 30178d576e50d41b8ba40f2659421b9c, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  scrollDirection: 0
-  itemPrefab: {fileID: 1664266904699556632, guid: 7557025ad45f74c18bbc8c8125f54450, type: 3}
+  scrollDirection: 1
+  itemPrefab: {fileID: 1664266904699556632, guid: b294ef61577e14e32aaecd30d7d210a6, type: 3}
   itemSize: 100
   itemSpacing: 10
   bufferCount: 4
+  dynamicBufferMultiplier: 2
 --- !u!1 &1640454163
 GameObject:
   m_ObjectHideFlags: 0

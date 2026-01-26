@@ -37,7 +37,7 @@ public class TestLoopScroll : MonoBehaviour
         // loopScrollView.ScrollToIndexCenter(79); // 任务80
         
         // 测试滚动到底部
-        loopScrollView.ScrollToIndexCenter(9); // 任务100
+        // loopScrollView.ScrollToIndexCenter(9); // 任务100
     }
     
     // 可以添加一个UI按钮来测试不同位置

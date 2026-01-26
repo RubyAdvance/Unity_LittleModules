@@ -44,6 +44,20 @@ public class LoopScrollView : MonoBehaviour
     private float _lastScrollPos = -1f;
     private const float _offsetThreshold = 0.001f;
 
+    // 新增：滑动优化相关变量
+    private Vector2 _lastScrollDelta = Vector2.zero;
+    private float _scrollSpeed = 0f;
+    private float _lastScrollTime = 0f;
+    private const float SCROLL_SPEED_THRESHOLD = 100f; // 像素/秒
+
+    // 修改：调整缓冲计算
+    [Tooltip("动态缓冲数量（根据滚动速度调整）")]
+    public int dynamicBufferMultiplier = 2;
+
+    // 新增：缓存计算参数
+    private float _cachedItemTotalSize; // itemSize + itemSpacing
+    private int _currentBufferCount = 0;
+
     void Awake()
     {
         // 初始化组件引用
@@ -54,7 +68,8 @@ public class LoopScrollView : MonoBehaviour
             Debug.LogError("ScrollRect未配置Content！");
             return;
         }
-
+        // 缓存常用计算值
+        _cachedItemTotalSize = itemSize + itemSpacing;
         // 强制移除Content上的冲突组件
         RemoveConflictComponents();
 
@@ -201,69 +216,243 @@ public class LoopScrollView : MonoBehaviour
         float visibleSize = _viewPortSize + (itemSize + itemSpacing) * bufferCount;
         _visibleItemCount = Mathf.CeilToInt(visibleSize / (itemSize + itemSpacing));
         _visibleItemCount = Mathf.Max(_visibleItemCount, 3);
-
+        // 优化：计算动态缓冲数量
+        CalculateDynamicBuffer();
         // 初始化Item对象池
         InitItemPool();
 
         // 初始刷新Item位置和数据
         RefreshAllVisibleItems();
     }
+    /// <summary>
+    /// 计算动态缓冲数量
+    /// </summary>
+    private void CalculateDynamicBuffer()
+    {
+        // 基础缓冲 + 动态缓冲
+        _currentBufferCount = bufferCount * dynamicBufferMultiplier;
+
+        // 确保至少能覆盖视口
+        int minItemsForViewport = Mathf.CeilToInt(_viewPortSize / _cachedItemTotalSize) + 2;
+        _currentBufferCount = Mathf.Max(_currentBufferCount, minItemsForViewport);
+
+        Debug.Log($"动态缓冲数量: {_currentBufferCount} (基础: {bufferCount}, 乘数: {dynamicBufferMultiplier})");
+    }
 
     /// <summary>
-    /// 初始化Item对象池（创建最少需要的Item数量）
+    /// 优化的滚动事件回调
     /// </summary>
-    private void InitItemPool()
+    private void OnScrollChanged(Vector2 scrollPos)
     {
-        // 销毁旧Item
-        foreach (var item in _itemPool)
-        {
-            Destroy(item);
-        }
-        _itemPool.Clear();
+        // 计算滚动速度（用于动态调整缓冲）
+        Vector2 currentPos = scrollPos;
+        float deltaTime = Time.time - _lastScrollTime;
+        _lastScrollTime = Time.time;
 
-        // 创建新Item
-        for (int i = 0; i < _visibleItemCount; i++)
+        if (deltaTime > 0.001f)
         {
-            if (itemPrefab == null)
+            Vector2 delta = currentPos - _lastScrollDelta;
+            _scrollSpeed = Mathf.Abs(delta.magnitude / deltaTime);
+            _lastScrollDelta = currentPos;
+        }
+
+        // 根据滚动速度调整缓冲（滚动越快，需要更多缓冲）
+        if (_scrollSpeed > SCROLL_SPEED_THRESHOLD)
+        {
+            // 快速滚动时增加缓冲
+            int speedBasedBuffer = bufferCount * 3;
+            if (_currentBufferCount < speedBasedBuffer)
             {
-                Debug.LogError("未配置Item预制体！");
-                return;
+                _currentBufferCount = speedBasedBuffer;
+                ResizeItemPoolIfNeeded();
+            }
+        }
+        else
+        {
+            // 慢速滚动时恢复默认缓冲
+            CalculateDynamicBuffer();
+        }
+
+        // 使用无阈值检测，确保即时刷新
+        RefreshAllVisibleItemsOptimized();
+    }
+    /// <summary>
+    /// 优化：根据缓冲需求调整对象池大小
+    /// </summary>
+    private void ResizeItemPoolIfNeeded()
+    {
+        int requiredPoolSize = CalculateRequiredPoolSize();
+
+        if (requiredPoolSize > _itemPool.Count)
+        {
+            Debug.Log($"调整对象池大小: {_itemPool.Count} -> {requiredPoolSize}");
+
+            // 添加新的Item
+            for (int i = _itemPool.Count; i < requiredPoolSize; i++)
+            {
+                CreateAndAddItemToPool(i);
+            }
+        }
+    }
+    /// <summary>
+    /// 计算需要的对象池大小
+    /// </summary>
+    private int CalculateRequiredPoolSize()
+    {
+        // 可视区域Item数量 + 前后缓冲
+        int visibleCount = Mathf.CeilToInt(_viewPortSize / _cachedItemTotalSize);
+        return visibleCount + _currentBufferCount * 2 + 2; // 额外+2确保安全
+    }
+
+    /// <summary>
+    /// 优化的刷新所有可视Item（解决留白问题）
+    /// </summary>
+    private void RefreshAllVisibleItemsOptimized()
+    {
+        if (_totalDataCount == 0 || _itemPool.Count == 0) return;
+
+        // 计算Content的偏移量
+        float contentOffset = scrollDirection == ScrollDirection.Vertical
+            ? Mathf.Max(0, Mathf.Abs(_contentRect.anchoredPosition.y))
+            : Mathf.Max(0, Mathf.Abs(_contentRect.anchoredPosition.x));
+
+        // 优化：计算第一个可视Item索引（考虑浮点数精度）
+        int firstVisibleIndex = CalculateFirstVisibleIndex(contentOffset);
+
+        // 确保索引在有效范围内
+        firstVisibleIndex = Mathf.Max(0, firstVisibleIndex - _currentBufferCount);
+
+        // 优化：预计算所有Item的位置
+        RefreshItemsWithPrecision(firstVisibleIndex);
+    }
+
+    /// <summary>
+    /// 精确计算第一个可视Item索引
+    /// </summary>
+    private int CalculateFirstVisibleIndex(float contentOffset)
+    {
+        // 使用更精确的浮点数计算
+        float exactIndex = contentOffset / _cachedItemTotalSize;
+
+        // 添加小偏移量避免浮点数舍入问题
+        float epsilon = 0.0001f;
+        int calculatedIndex = Mathf.FloorToInt(exactIndex + epsilon);
+
+        // 限制在数据范围内
+        return Mathf.Clamp(calculatedIndex, 0, Mathf.Max(0, _totalDataCount - 1));
+    }
+
+    /// <summary>
+    /// 精确刷新Item位置和数据
+    /// </summary>
+    private void RefreshItemsWithPrecision(int firstVisibleIndex)
+    {
+        for (int i = 0; i < _itemPool.Count; i++)
+        {
+            int targetIndex = firstVisibleIndex + i;
+
+            // 超出数据范围则隐藏
+            if (targetIndex < 0 || targetIndex >= _totalDataCount)
+            {
+                _itemPool[i].SetActive(false);
+                continue;
             }
 
-            GameObject item = Instantiate(itemPrefab, _contentRect);
-            item.SetActive(true);
-            RectTransform itemRect = item.GetComponent<RectTransform>();
-            // 强制设置Item尺寸
+            // 确保Item激活
+            if (!_itemPool[i].activeSelf)
+                _itemPool[i].SetActive(true);
+
+            // 精确计算Item位置（避免浮点数误差累积）
+            RectTransform itemRect = _itemPool[i].GetComponent<RectTransform>();
+            float itemOffset = CalculateExactItemOffset(targetIndex);
+
+            // 设置精确位置
             if (scrollDirection == ScrollDirection.Vertical)
             {
-                itemRect.sizeDelta = new Vector2(0, itemSize);
+                Vector2 targetPos = new Vector2(0, -itemOffset);
+
+                // 检查位置是否变化明显
+                if (Vector2.Distance(itemRect.anchoredPosition, targetPos) > 0.1f)
+                {
+                    itemRect.anchoredPosition = targetPos;
+                }
             }
             else
             {
-                itemRect.sizeDelta = new Vector2(itemSize, 0);
+                Vector2 targetPos = new Vector2(itemOffset, 0);
+
+                if (Vector2.Distance(itemRect.anchoredPosition, targetPos) > 0.1f)
+                {
+                    itemRect.anchoredPosition = targetPos;
+                }
             }
-            _itemPool.Add(item);
+
+            // 绑定数据（避免重复绑定）
+            IListItem listItem = _itemPool[i].GetComponent<IListItem>();
+            if (listItem != null)
+            {
+                // 可以添加数据变化检测避免不必要的更新
+                listItem.SetData(_dataList[targetIndex], targetIndex);
+            }
         }
     }
 
     /// <summary>
-    /// 滚动事件回调（横竖通用）
+    /// 精确计算Item偏移量
     /// </summary>
-    /// <param name="scrollPos">滚动归一化位置</param>
-    private void OnScrollChanged(Vector2 scrollPos)
+    private float CalculateExactItemOffset(int index)
     {
-        // 获取当前滚动轴的位置（垂直=Y，横向=X）
-        float currentPos = scrollDirection == ScrollDirection.Vertical
-            ? scrollPos.y
-            : scrollPos.x;
-
-        // 避免频繁计算
-        if (Mathf.Abs(currentPos - _lastScrollPos) < _offsetThreshold) return;
-        _lastScrollPos = currentPos;
-
-        RefreshAllVisibleItems();
+        // 避免使用循环累加，直接用乘法计算
+        return index * _cachedItemTotalSize;
     }
 
+    /// <summary>
+    /// 初始化Item对象池（优化版）
+    /// </summary>
+    private void InitItemPool()
+    {
+        // 清空现有池
+        foreach (var item in _itemPool)
+        {
+            if (item != null)
+                Destroy(item);
+        }
+        _itemPool.Clear();
+
+        // 计算需要的Item数量
+        int requiredCount = CalculateRequiredPoolSize();
+
+        // 创建Item
+        for (int i = 0; i < requiredCount; i++)
+        {
+            CreateAndAddItemToPool(i);
+        }
+
+        Debug.Log($"对象池初始化完成，数量: {_itemPool.Count}");
+    }
+    /// <summary>
+    /// 创建并添加Item到对象池
+    /// </summary>
+    private void CreateAndAddItemToPool(int index)
+    {
+        if (itemPrefab == null) return;
+
+        GameObject item = Instantiate(itemPrefab, _contentRect);
+        item.SetActive(false); // 初始隐藏
+        RectTransform itemRect = item.GetComponent<RectTransform>();
+
+        // 设置Item尺寸
+        if (scrollDirection == ScrollDirection.Vertical)
+        {
+            itemRect.sizeDelta = new Vector2(0, itemSize);
+        }
+        else
+        {
+            itemRect.sizeDelta = new Vector2(itemSize, 0);
+        }
+
+        _itemPool.Add(item);
+    }
     /// <summary>
     /// 刷新所有可视区域的Item（核心复用逻辑，横竖通用）
     /// </summary>

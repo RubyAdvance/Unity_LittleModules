@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.UI;
@@ -71,8 +72,10 @@ public class LoopScrollView : MonoBehaviour
             Debug.LogError("ScrollRect未配置Viewport！");
             return;
         }
-        _viewPortSize = scrollDirection == ScrollDirection.Vertical 
-            ? viewPortRect.rect.height 
+        // 修复：强制刷新视口布局，避免获取到初始0值
+        LayoutRebuilder.ForceRebuildLayoutImmediate(viewPortRect);
+        _viewPortSize = scrollDirection == ScrollDirection.Vertical
+            ? viewPortRect.rect.height
             : viewPortRect.rect.width;
 
         // 监听滚动事件
@@ -191,6 +194,9 @@ public class LoopScrollView : MonoBehaviour
             _contentRect.sizeDelta = new Vector2(_contentTotalSize, 0);
         }
 
+        // 修复：强制刷新Content布局，确保尺寸生效
+        LayoutRebuilder.ForceRebuildLayoutImmediate(_contentRect);
+
         // 计算可视区域Item数量（适配分辨率，保底3个）
         float visibleSize = _viewPortSize + (itemSize + itemSpacing) * bufferCount;
         _visibleItemCount = Mathf.CeilToInt(visibleSize / (itemSize + itemSpacing));
@@ -247,8 +253,8 @@ public class LoopScrollView : MonoBehaviour
     private void OnScrollChanged(Vector2 scrollPos)
     {
         // 获取当前滚动轴的位置（垂直=Y，横向=X）
-        float currentPos = scrollDirection == ScrollDirection.Vertical 
-            ? scrollPos.y 
+        float currentPos = scrollDirection == ScrollDirection.Vertical
+            ? scrollPos.y
             : scrollPos.x;
 
         // 避免频繁计算
@@ -337,6 +343,8 @@ public class LoopScrollView : MonoBehaviour
         }
         // 强制刷新
         RefreshAllVisibleItems();
+        // 修复：同步ScrollRect的归一化位置，确保滚动状态生效
+        _scrollRect.verticalNormalizedPosition = 1 - (_contentRect.anchoredPosition.y / _contentTotalSize);
     }
 
     /// <summary>
@@ -358,6 +366,178 @@ public class LoopScrollView : MonoBehaviour
         {
             item.SetActive(false);
         }
+    }
+
+    /// <summary>
+    /// 滚动到指定索引的Item并让其居中显示（仅纵向生效）
+    /// </summary>
+    /// <param name="targetIndex">目标索引（注意：列表索引从0开始，任务40对应index=39）</param>
+    public void ScrollToIndexCenter(int targetIndex)
+    {
+        if (scrollDirection != ScrollDirection.Vertical)
+        {
+            Debug.LogWarning("仅纵向列表支持居中定位！");
+            ScrollToIndex(targetIndex);
+            return;
+        }
+
+        if (targetIndex < 0 || targetIndex >= _totalDataCount)
+        {
+            Debug.LogWarning("目标索引超出范围！");
+            return;
+        }
+        Debug.Log($"居中定位目标索引：{targetIndex}");
+
+        // 修复：强制刷新布局，确保尺寸正确
+        LayoutRebuilder.ForceRebuildLayoutImmediate(_contentRect);
+        LayoutRebuilder.ForceRebuildLayoutImmediate(_scrollRect.viewport as RectTransform);
+
+        // 重新获取视口尺寸（确保准确）
+        RectTransform viewPortRect = _scrollRect.viewport as RectTransform;
+        _viewPortSize = viewPortRect.rect.height;
+
+        // 重新计算Content总尺寸
+        _contentTotalSize = _totalDataCount * (itemSize + itemSpacing) - itemSpacing;
+
+        // 1. 计算目标Item的顶部位置（在Content本地坐标系中）
+        float itemTopPosition = targetIndex * (itemSize + itemSpacing);
+
+        // 2. 计算目标Item的中心位置（在Content本地坐标系中）
+        float itemCenterPosition = itemTopPosition + (itemSize / 2f);
+
+        // 3. 计算要使目标Item居中，Content顶部应该在的位置
+        // Content是Top锚点，向下移动时anchoredPosition.y为负值
+        // 目标：让 itemCenterPosition 对齐到视口中心
+        float viewportCenterInContentSpace = Mathf.Abs(_contentRect.anchoredPosition.y) + (_viewPortSize / 2f);
+        float targetContentTopPosition = itemCenterPosition - (_viewPortSize / 2f);
+
+        Debug.Log($"参数 - Item顶部: {itemTopPosition}, Item中心: {itemCenterPosition}, 视口中心: {_viewPortSize / 2f}");
+        Debug.Log($"参数 - Content总高度: {_contentTotalSize}, 视口高度: {_viewPortSize}");
+
+        // 4. 边界检查：确保Content不会滚动出界
+        // Content顶部最小位置为0（列表顶部）
+        // Content顶部最大位置 = Content总高度 - 视口高度
+        float minContentTopPosition = 0;
+        float maxContentTopPosition = Mathf.Max(0, _contentTotalSize - _viewPortSize);
+
+        // 修正：目标位置应该在最小和最大位置之间
+        targetContentTopPosition = Mathf.Clamp(targetContentTopPosition, minContentTopPosition, maxContentTopPosition);
+
+        Debug.Log($"边界 - 最小: {minContentTopPosition}, 最大: {maxContentTopPosition}, 目标: {targetContentTopPosition}");
+
+        // 5. 设置Content位置（因为Content是Top锚点，所以y坐标为负值）
+        _contentRect.anchoredPosition = new Vector2(_contentRect.anchoredPosition.x, -targetContentTopPosition);
+
+        Debug.Log($"设置Content位置: {_contentRect.anchoredPosition}");
+
+        // 6. 更新ScrollRect的归一化位置
+        // 归一化位置：0=底部，1=顶部（对于垂直滚动）
+        float normalizedPosition = 0;
+        if (_contentTotalSize > _viewPortSize)
+        {
+            normalizedPosition = 1 - (targetContentTopPosition / (_contentTotalSize - _viewPortSize));
+        }
+
+        // 确保归一化位置在有效范围内
+        normalizedPosition = Mathf.Clamp01(normalizedPosition);
+        _scrollRect.verticalNormalizedPosition = normalizedPosition;
+
+        Debug.Log($"归一化位置: {normalizedPosition}");
+
+        // 7. 强制刷新Item，确保显示正确
+        RefreshAllVisibleItems();
+    }
+
+    /// <summary>
+    /// 延迟调用居中定位（解决Start中立即调用的时机问题）
+    /// </summary>
+    /// <param name="targetIndex">目标索引</param>
+    /// <returns></returns>
+    public IEnumerator ScrollToIndexCenterDelayed(int targetIndex)
+    {
+        // 等待1帧，让UI布局完全刷新
+        yield return null;
+        ScrollToIndexCenter(targetIndex);
+    }
+
+    /// <summary>
+    /// 使用Unity的ScrollTo功能实现精确居中（推荐）
+    /// </summary>
+    public void ScrollToIndexCenterCorrected(int targetIndex)
+    {
+        if (scrollDirection != ScrollDirection.Vertical)
+        {
+            Debug.LogWarning("仅纵向列表支持居中定位！");
+            return;
+        }
+
+        if (targetIndex < 0 || targetIndex >= _totalDataCount)
+        {
+            Debug.LogWarning("目标索引超出范围！");
+            return;
+        }
+
+        // 等待一帧确保UI布局完成
+        StartCoroutine(ScrollToIndexCenterCoroutine(targetIndex));
+    }
+
+    private IEnumerator ScrollToIndexCenterCoroutine(int targetIndex)
+    {
+        // 等待一帧确保布局计算完成
+        yield return null;
+
+        // 强制布局重建
+        LayoutRebuilder.ForceRebuildLayoutImmediate(_contentRect);
+        Canvas.ForceUpdateCanvases();
+
+        // 计算目标Item在Content中的归一化位置
+        // Item顶部到Content顶部的距离
+        float itemTop = targetIndex * (itemSize + itemSpacing);
+
+        // Item中心到Content顶部的距离
+        float itemCenter = itemTop + (itemSize / 2f);
+
+        // Content总高度
+        float contentHeight = _contentRect.rect.height;
+
+        // 视口高度
+        RectTransform viewport = _scrollRect.viewport as RectTransform;
+        float viewportHeight = viewport.rect.height;
+
+        // 计算归一化位置（0=底部，1=顶部）
+        // 要让Item中心对齐视口中心，需要调整Content位置
+        float targetNormalizedPosition = 0;
+
+        if (contentHeight > viewportHeight)
+        {
+            // 计算目标Item中心在Content中的位置比例
+            float itemCenterRatio = itemCenter / contentHeight;
+
+            // 计算视口中心在Content中的位置比例
+            float viewportCenterRatio = viewportHeight / 2f / contentHeight;
+
+            // 调整归一化位置，使itemCenterRatio对齐到0.5（视口中心）
+            targetNormalizedPosition = 1 - (itemCenterRatio - viewportCenterRatio);
+
+            // 边界检查
+            float visibleHeight = contentHeight - viewportHeight;
+            if (visibleHeight > 0)
+            {
+                // 计算最小和最大归一化位置
+                float minPosition = 0;
+                float maxPosition = 1;
+
+                targetNormalizedPosition = Mathf.Clamp(targetNormalizedPosition, minPosition, maxPosition);
+            }
+        }
+
+        Debug.Log($"滚动到索引 {targetIndex}，归一化位置: {targetNormalizedPosition}");
+
+        // 平滑滚动到目标位置
+        _scrollRect.verticalNormalizedPosition = targetNormalizedPosition;
+
+        // 强制刷新一次
+        RefreshAllVisibleItems();
     }
 }
 
